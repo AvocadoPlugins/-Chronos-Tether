@@ -1,0 +1,262 @@
+using System;
+using System.Collections.Generic;
+using MEC;
+using Exiled.API.Features;
+using Exiled.API.Features.Items;
+using Exiled.API.Features.Toys;
+using Exiled.CustomItems.API.Features;
+using Exiled.Events.EventArgs.Player;
+using CommandSystem;
+using UnityEngine;
+
+namespace ChronosPlugin
+{
+    public class Config : Exiled.API.Interfaces.IConfig
+    {
+        public bool IsEnabled { get; set; } = true;
+        public bool Debug { get; set; } = false;
+
+        public ChronosWeapon ChronosTether { get; set; } = new ChronosWeapon();
+    }
+
+    public class Plugin : Plugin<Config>
+    {
+        public override string Name => "ChronosTether";
+        public override string Author => "qneonq";
+        public override Version Version => new Version(2, 0, 1);
+        public override Version RequiredExiledVersion => new Version(8, 0, 0);
+
+        public static Plugin Instance { get; private set; }
+
+        public override void OnEnabled()
+        {
+            Instance = this;
+            Config.ChronosTether.Register();
+            base.OnEnabled();
+        }
+
+        public override void OnDisabled()
+        {
+            Config.ChronosTether?.Unregister();
+            Instance = null;
+            base.OnDisabled();
+        }
+    }
+
+    public class ChronosWeapon : CustomWeapon
+    {
+        public override uint Id { get; set; } = 206;
+        
+        public override string Name { get; set; } = "<color=#00ffff>🔗 Chronos Tether 🔗</color>";
+        public override string Description { get; set; } = "Shoot 🎯 to attach a tether, and press <color=#ffff00>[R]</color> to pull the target ⚡!";
+        
+        public override float Damage { get; set; } = 1f; 
+        public override byte ClipSize { get; set; } = 12;
+        public override float Weight { get; set; } = 1f;
+        public override ItemType Type { get; set; } = ItemType.GunCOM15;
+        public override SpawnProperties SpawnProperties { get; set; } = new SpawnProperties();
+
+        public class TetherData
+        {
+            public Player Target;
+            public CoroutineHandle TimerRoutine;
+            public List<Primitive> VisualMarkers = new List<Primitive>(); 
+        }
+
+        public static Dictionary<Player, TetherData> ActiveTethers = new Dictionary<Player, TetherData>();
+
+        protected override void SubscribeEvents()
+        {
+            Exiled.Events.Handlers.Player.Hurting += OnHurting;
+            Exiled.Events.Handlers.Player.ReloadingWeapon += OnReloading;
+            Exiled.Events.Handlers.Player.Dying += OnDying;
+            base.SubscribeEvents();
+        }
+
+        protected override void UnsubscribeEvents()
+        {
+            Exiled.Events.Handlers.Player.Hurting -= OnHurting;
+            Exiled.Events.Handlers.Player.ReloadingWeapon -= OnReloading;
+            Exiled.Events.Handlers.Player.Dying -= OnDying;
+            base.UnsubscribeEvents();
+        }
+
+        protected override void OnPickingUp(PickingUpItemEventArgs ev)
+        {
+            if (Check(ev.Pickup))
+            {
+                ev.Player.ShowHint("<voffset=30><size=40><color=#00ffff>🔗 <b>CHRONOS TETHER</b> 🔗</color>\n<size=25><color=#cccccc>Hit an enemy 🎯, then press <color=#ffff00><b>[R]</b></color> to pull them to you ⚡!</color></size></size></voffset>", 8f);
+            }
+            base.OnPickingUp(ev);
+        }
+
+        private void OnHurting(HurtingEventArgs ev)
+        {
+            if (Check(ev.Attacker?.CurrentItem))
+            {
+                ev.Amount = Damage; 
+
+                if (ev.Player == null || ev.Player == ev.Attacker) return;
+
+                Player attacker = ev.Attacker;
+                Player target = ev.Player;
+
+                ClearTether(attacker);
+
+                int cubeCount = 30;
+                List<Primitive> markers = new List<Primitive>();
+                
+                for (int i = 0; i < cubeCount; i++)
+                {
+                    Primitive cube = Primitive.Create(target.Position, default, Vector3.one * 0.12f, true);
+                    cube.Type = PrimitiveType.Cube;
+                    
+                    cube.Color = (i % 2 == 0) ? Color.cyan : Color.blue; 
+                    cube.MovementSmoothing = 60; 
+                    markers.Add(cube);
+                }
+
+                CoroutineHandle handle = Timing.RunCoroutine(TetherRoutine(attacker, target, markers));
+                ActiveTethers[attacker] = new TetherData { Target = target, TimerRoutine = handle, VisualMarkers = markers };
+
+                attacker.ShowHint("<voffset=30><size=45><color=#00ffff><b>🔗 TETHER ATTACHED 🔗</b></color>\n<size=30><color=#ffffff>Press <color=#ffff00><b>[RELOAD]</b></color> to pull the target!</color></size></size></voffset>", 4f);
+                
+                target.ShowHint("<voffset=30><size=45><color=#ff0000><b>⚠️️ YOU ARE TETHERED ⚠️</b></color>\n<size=30><color=#ffffff>Run before you get pulled back ⏳!</color></size></size></voffset>", 4f);
+            }
+        }
+
+        private IEnumerator<float> TetherRoutine(Player attacker, Player target, List<Primitive> markers)
+        {
+            float timeElapsed = 0f;
+            float maxTime = 10f; 
+
+            while (timeElapsed < maxTime && target.IsAlive && attacker.IsAlive)
+            {
+                Vector3 start = attacker.Position + (Vector3.up * 1.2f);
+                Vector3 end = target.Position + (Vector3.up * 1.2f);
+                
+                Vector3 direction = (end - start).normalized;
+                Vector3 right = Vector3.Cross(direction, Vector3.up).normalized;
+                if (right == Vector3.zero) right = Vector3.forward;
+                Vector3 upLocal = Vector3.Cross(right, direction).normalized;
+
+                for (int i = 0; i < markers.Count; i++)
+                {
+                    if (markers[i] == null) continue;
+
+                    bool isSecondStrand = (i % 2 == 0);
+                    
+                    float t = ((float)i / markers.Count + timeElapsed * 1.5f) % 1.0f;
+                    
+                    Vector3 basePos = Vector3.Lerp(start, end, t);
+                    
+                    float radius = 0.4f * Mathf.Sin(t * Mathf.PI); 
+                    float angle = t * Mathf.PI * 10f + timeElapsed * 15f; 
+                    
+                    if (isSecondStrand) angle += Mathf.PI;
+                    
+                    Vector3 offset = right * Mathf.Cos(angle) * radius + upLocal * Mathf.Sin(angle) * radius;
+
+                    markers[i].Position = basePos + offset;
+                    markers[i].Rotation = Quaternion.Euler(timeElapsed * 300f, timeElapsed * 200f, timeElapsed * 100f);
+                }
+                
+                timeElapsed += 0.1f;
+                yield return Timing.WaitForSeconds(0.1f);
+            }
+            
+            if (attacker.IsAlive && ActiveTethers.ContainsKey(attacker))
+            {
+                attacker.ShowHint("<voffset=30><size=35><color=#ff3333>❌ <b>Tether Broken</b> ❌</color></size></voffset>", 3f);
+            }
+            ClearTether(attacker);
+        }
+
+        private void OnReloading(ReloadingWeaponEventArgs ev)
+        {
+            if (Check(ev.Player.CurrentItem) && ActiveTethers.ContainsKey(ev.Player))
+            {
+                ev.IsAllowed = false; 
+                
+                Player attacker = ev.Player;
+                TetherData tether = ActiveTethers[attacker];
+
+                if (tether.Target != null && tether.Target.IsAlive)
+                {
+                    Vector3 pullPosition = attacker.Position + (attacker.CameraTransform.forward * 1.5f);
+                    tether.Target.Teleport(pullPosition);
+
+                    attacker.ShowHint("<voffset=30><size=55><color=#00ffff><b>⚡ GET OVER HERE! ⚡</b></color></size></voffset>", 2f);
+                    tether.Target.ShowHint("<voffset=30><size=55><color=#ff0000><b>🌀 YOU WERE PULLED 🌀</b></color></size></voffset>", 2f);
+                }
+
+                ClearTether(attacker);
+            }
+        }
+
+        private void OnDying(DyingEventArgs ev)
+        {
+            ClearTether(ev.Player);
+            
+            foreach (var kvp in ActiveTethers)
+            {
+                if (kvp.Value.Target == ev.Player)
+                {
+                    Timing.KillCoroutines(kvp.Value.TimerRoutine);
+                    if (kvp.Value.VisualMarkers != null)
+                    {
+                        foreach (var marker in kvp.Value.VisualMarkers)
+                            if (marker != null) marker.Destroy();
+                    }
+                    
+                    ActiveTethers.Remove(kvp.Key);
+                    break;
+                }
+            }
+        }
+
+        private void ClearTether(Player player)
+        {
+            if (ActiveTethers.TryGetValue(player, out TetherData tether))
+            {
+                Timing.KillCoroutines(tether.TimerRoutine);
+                if (tether.VisualMarkers != null)
+                {
+                    foreach (var marker in tether.VisualMarkers)
+                    {
+                        if (marker != null) marker.Destroy();
+                    }
+                }
+                ActiveTethers.Remove(player);
+            }
+        }
+    }
+
+    [CommandHandler(typeof(RemoteAdminCommandHandler))]
+    public class GiveTetherCommand : CommandSystem.ICommand
+    {
+        public string Command => "givetether";
+        public string[] Aliases => new string[] { "gt" };
+        public string Description => "Gives the custom weapon Chronos Tether.";
+
+        public bool Execute(ArraySegment<string> arguments, ICommandSender sender, out string response)
+        {
+            Player player = Player.Get(sender);
+            if (player == null) 
+            { 
+                response = "Command must be executed by a player."; 
+                return false; 
+            }
+
+            if (CustomItem.TryGet(206, out CustomItem item))
+            {
+                item.Give(player);
+                response = "Chronos Tether successfully given!";
+                return true;
+            }
+            
+            response = "Internal error. Item not found.";
+            return false;
+        }
+    }
+}
