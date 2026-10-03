@@ -4,6 +4,10 @@
 ![SCP:SL Version](https://img.shields.io/badge/SCP:SL-13.0%2B-red)
 ![Release](https://img.shields.io/badge/Release-v2.0.1-brightgreen)
 
+
+
+
+
 **Chronos Tether** is a highly visual, game-breaking custom weapon plugin for SCP: Secret Laboratory servers using the EXILED framework. 
 Shoot any player or SCP to attach a space-time anchor, visualized as a glowing, rotating **double-helix energy beam**. The target has 10 seconds to run away. Pressing Reload `[R]` instantly pulls the victim across the map directly to you!
 
